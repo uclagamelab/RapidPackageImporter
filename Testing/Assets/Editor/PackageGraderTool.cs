@@ -55,15 +55,16 @@ public class PackageGraderTool : EditorWindow
 
         m_packagePathHeader = new TextElement();
         m_packagePathHeader.style.unityTextAlign = TextAnchor.MiddleCenter;
-        m_packagePathHeader.style.unityTextOutlineColor = Color.green;
-        m_packagePathHeader.style.unityTextOutlineWidth = 2;
-
+        m_packagePathHeader.style.unityFontStyleAndWeight = FontStyle.Bold;
+        m_packagePathHeader.style.whiteSpace = WhiteSpace.Normal;
+        m_packagePathHeader.style.marginTop = 4;
         m_packagePathHeader.text = PACKAGE_PATH;
 
 
         Button selectFolderButton = new Button();
         selectFolderButton.text = "Select Folder";
         selectFolderButton.clicked += SelectFolder;
+        selectFolderButton.style.height = 26;
         rootVisualElement.Add(m_packagePathHeader);
         rootVisualElement.Add(selectFolderButton);
 
@@ -87,24 +88,37 @@ public class PackageGraderTool : EditorWindow
 
         //The right panel is all the controls
         m_RightPane = new VisualElement();
+        m_RightPane.style.paddingLeft = 8;
+        m_RightPane.style.paddingRight = 8;
+        m_RightPane.style.paddingTop = 8;
         splitView.Add(m_RightPane);
 
         importButton = new Button();
         importButton.clicked += ImportPackage;
         importButton.text = "Import Package";
+        importButton.style.marginBottom = 4;
+        importButton.style.height = 28;
 
 
         deleteButton = new Button();
         deleteButton.clicked += DeletePackage;
         deleteButton.text = "Clear Project";
+        deleteButton.style.marginBottom = 4;
+        deleteButton.style.height = 28;
 
         openSceneButton = new Button();
         openSceneButton.clicked += OpenSceneInPackage;
         openSceneButton.text = "Open nth Scene in Package";
+        openSceneButton.style.marginBottom = 4;
+        openSceneButton.style.height = 28;
 
 
         m_RightHeader = new TextElement();
         m_RightHeader.style.unityTextAlign = TextAnchor.MiddleCenter;
+        m_RightHeader.style.unityFontStyleAndWeight = FontStyle.Bold;
+        m_RightHeader.style.marginBottom = 8;
+        m_RightHeader.style.whiteSpace = WhiteSpace.Normal;
+        m_RightHeader.text = "Select a package on the left";
 
 
         m_RightPane.Add(m_RightHeader);
@@ -115,7 +129,10 @@ public class PackageGraderTool : EditorWindow
         m_RightPane.Add(openSceneButton);
         m_RightPane.Add(deleteButton);
 
-
+        //Import / Open need a selected package; keep them disabled until one is picked.
+        //"Clear Project" stays enabled since it doesn't depend on a selection.
+        importButton.SetEnabled(false);
+        openSceneButton.SetEnabled(false);
 
         PopulateLeftPane();
 
@@ -132,6 +149,16 @@ public class PackageGraderTool : EditorWindow
 
         m_leftPane.Clear();
 
+        //Repopulating clears the selection, so reset anything that depended on it
+        currentlySelectedPackage = null;
+        packageFolderPath = null;
+        if (importButton != null) importButton.SetEnabled(false);
+        if (openSceneButton != null) openSceneButton.SetEnabled(false);
+        if (m_RightHeader != null) m_RightHeader.text = "Select a package on the left";
+
+        //Show how many packages are in the selected folder
+        m_packagePathHeader.text = PACKAGE_PATH + "\n(" + packages.Length + " package" + (packages.Length == 1 ? "" : "s") + " found)";
+
         if (packages.Length == 0)
         {
             Repaint();
@@ -144,6 +171,8 @@ public class PackageGraderTool : EditorWindow
             (item as Label).text = packages[index].Substring(PACKAGE_PATH.Length);
         };
         m_leftPane.itemsSource = packages;
+        //Unsubscribe first so re-populating (e.g. picking a new folder) doesn't stack handlers
+        m_leftPane.selectionChanged -= OnPackageSelection;
         m_leftPane.selectionChanged += OnPackageSelection;
 
 
@@ -152,8 +181,17 @@ public class PackageGraderTool : EditorWindow
     private void OnPackageSelection(IEnumerable<object> selectedItems)
     {
         // Get the selected folder
-        currentlySelectedPackage = selectedItems.First() as string;
-        m_RightHeader.text = currentlySelectedPackage;
+        currentlySelectedPackage = selectedItems.FirstOrDefault() as string;
+        bool hasSelection = !string.IsNullOrEmpty(currentlySelectedPackage);
+
+        m_RightHeader.text = hasSelection
+            ? System.IO.Path.GetFileName(currentlySelectedPackage)
+            : "Select a package on the left";
+
+        //Buttons that act on the selection are only usable once we have one
+        importButton.SetEnabled(hasSelection);
+        openSceneButton.SetEnabled(hasSelection);
+
         packageFolderPath = null;
     }
 
@@ -163,7 +201,7 @@ public class PackageGraderTool : EditorWindow
         if (PACKAGE_PATH == null || PACKAGE_PATH == string.Empty)
         {
             Debug.LogError("No path was specified.");
-            return null;
+            return new string[0];
         }
         //Read from the UnimportedPackages folder
         string[] packages = Directory.GetFiles(PACKAGE_PATH, "*.unitypackage", SearchOption.TopDirectoryOnly);
@@ -177,6 +215,11 @@ public class PackageGraderTool : EditorWindow
 
     private void ImportPackage()
     {
+        if (string.IsNullOrEmpty(currentlySelectedPackage))
+        {
+            Debug.LogError("Select a package from the list first.");
+            return;
+        }
         AssetDatabase.ImportPackage(currentlySelectedPackage, false);
         // Refresh the AssetDatabase after all the changes
         AssetDatabase.Refresh();
@@ -184,6 +227,16 @@ public class PackageGraderTool : EditorWindow
 
     private void DeletePackage()
     {
+        //This wipes imported content out of Assets/ — guard it behind a confirmation
+        //so it can't be triggered by a stray click mid-grading.
+        bool confirmed = EditorUtility.DisplayDialog(
+            "Clear Project?",
+            "This will delete all imported content from the Assets folder (everything except the Editor and Packages folders).\n\nThis cannot be undone. Continue?",
+            "Clear Project",
+            "Cancel");
+
+        if (!confirmed)
+            return;
 
         DirectoryInfo d = new DirectoryInfo("Assets");
 
@@ -239,17 +292,26 @@ public class PackageGraderTool : EditorWindow
     private void OpenSceneInPackage()
     {
         FindPackageDirectory();
+        if (string.IsNullOrEmpty(packageFolderPath))
+        {
+            //FindPackageDirectory already logged why
+            return;
+        }
+
         var texturePackageNames = Directory.GetFiles(packageFolderPath, "*.unity", SearchOption.AllDirectories);
 
-        //Open the first scene
-        if (texturePackageNames.Length > 0)
-        {
-            EditorSceneManager.OpenScene(texturePackageNames[sceneIndex.value]);
-        }
-        else
+        if (texturePackageNames.Length == 0)
         {
             Debug.LogError("No scenes found in folder " + currentlySelectedPackage);
+            return;
         }
 
+        //Clamp the requested scene number into range so a bad value can't crash the tool
+        int index = Mathf.Clamp(sceneIndex.value, 0, texturePackageNames.Length - 1);
+        if (index != sceneIndex.value)
+        {
+            Debug.LogWarning("Scene #" + sceneIndex.value + " is out of range. Opening scene #" + index + " instead (" + texturePackageNames.Length + " scene(s) found).");
+        }
+        EditorSceneManager.OpenScene(texturePackageNames[index]);
     }
 }
